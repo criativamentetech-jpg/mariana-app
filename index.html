@@ -771,6 +771,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   </div>
 </div>
 
+<!-- DOSE EDIT MODAL -->
+<div class="modal-overlay" id="modal-dose-edit">
+  <div class="modal" style="max-width:360px">
+    <div class="modal-header"><div class="modal-title" id="dose-edit-title">💊 Registrar dose</div><button class="modal-close" onclick="closeModal('modal-dose-edit')">✕</button></div>
+    <div id="dose-edit-info" style="font-size:13px;color:var(--gray-600);margin-bottom:14px"></div>
+    <div class="form-group">
+      <label class="form-label">Horário em que foi dado</label>
+      <input class="form-input" type="datetime-local" id="dose-edit-dt">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Observação (opcional)</label>
+      <input class="form-input" id="dose-edit-obs" placeholder="ex: deu com leite, não tomou tudo...">
+    </div>
+    <button class="form-btn teal" id="dose-edit-save-btn" onclick="saveDoseEdit()">✅ Salvar</button>
+    <button id="dose-edit-undo-btn" onclick="undoDoseFromEdit()" style="display:none;width:100%;padding:12px;margin-top:8px;background:var(--rose-soft);color:var(--rose);border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:600;cursor:pointer">↩️ Desfazer esta dose</button>
+  </div>
+</div>
+
 <!-- APPOINTMENT MODAL -->
 <div class="modal-overlay" id="modal-apt">
   <div class="modal">
@@ -1629,10 +1647,8 @@ function renderBubbles(m,sched){
 
     let cls=taken?'done':isMissed?'missed':isTodayPending?'today-pending':'future';
     const icon=taken?'✅':isMissed?'⚠️':isTodayPending?'💊':'·';
-    const title=taken?'Toque para desfazer':isMissed?'Perdida — toque para registrar mesmo assim':'Marcar como tomado';
-    const fn=taken
-      ?`undoDose('${m.id}','${logEntry?logEntry.id:''}')`
-      :`markScheduledDose('${m.id}','${slot.date}','${slot.time}')`;
+    const title=taken?'Editar / desfazer':isMissed?'Registrar mesmo assim':'Marcar como tomado';
+    const fn=`openDoseEdit('${m.id}','${taken&&logEntry?logEntry.id:''}','${slot.date}','${slot.time}',${taken})`;
 
     return`<div class="dose-bubble ${cls}" onclick="${fn}" title="${title}">
       <div class="dose-bub-day">${dayName}</div>
@@ -1641,6 +1657,55 @@ function renderBubbles(m,sched){
       <div class="dose-bub-icon">${icon}</div>
     </div>`;
   }).join('');
+}
+
+// ===== DOSE EDIT MODAL =====
+let _doseEditMedId=null,_doseEditLogId=null;
+
+function openDoseEdit(medId,logId,schedDate,schedTime,isTaken){
+  _doseEditMedId=medId;_doseEditLogId=logId||null;
+  const m=state.meds.find(x=>x.id===medId);
+  document.getElementById('dose-edit-title').textContent=isTaken?'✅ Dose registrada':'💊 Marcar dose';
+  document.getElementById('dose-edit-info').innerHTML=
+    `<strong>${m.name}</strong>${m.dose?' · '+m.dose:''}<br><span style="color:var(--gray-500)">Previsto: ${schedTime} — ${formatDate(schedDate)}</span>`;
+  const logEntry=logId?(m.log||[]).find(l=>l.id===logId):null;
+  const dtVal=logEntry?logEntry.dt.slice(0,16):`${schedDate}T${schedTime}`;
+  document.getElementById('dose-edit-dt').value=dtVal;
+  document.getElementById('dose-edit-obs').value=logEntry?logEntry.obs||'':'';
+  document.getElementById('dose-edit-undo-btn').style.display=logId?'':'none';
+  document.getElementById('dose-edit-save-btn').textContent=isTaken?'💾 Atualizar hora':'✅ Marcar como dada';
+  openModal('modal-dose-edit');
+}
+
+async function saveDoseEdit(){
+  const dtInput=document.getElementById('dose-edit-dt').value;
+  if(!dtInput){toast('Informe o horário');return;}
+  const obs=document.getElementById('dose-edit-obs').value.trim();
+  const dt=dtInput.length===16?dtInput+':00':dtInput;
+  setBtnLoading('dose-edit-save-btn',true);
+  const m=state.meds.find(x=>x.id===_doseEditMedId);
+  if(_doseEditLogId){
+    const{error}=await sb.from('mar_dose_logs').update({dt,obs}).eq('id',_doseEditLogId);
+    setBtnLoading('dose-edit-save-btn',false);
+    if(error){toast('Erro: '+error.message);return;}
+    const entry=(m.log||[]).find(l=>l.id===_doseEditLogId);
+    if(entry){entry.dt=dt;entry.obs=obs;}
+    toast('Horário atualizado! ✅');
+  }else{
+    const logId=genId();
+    const{error}=await sb.from('mar_dose_logs').insert({id:logId,med_id:_doseEditMedId,dt,obs});
+    setBtnLoading('dose-edit-save-btn',false);
+    if(error){toast('Erro: '+error.message);return;}
+    m.log=m.log||[];m.log.unshift({id:logId,dt,obs});
+    toast('Dose marcada! ✅');
+  }
+  closeModal('modal-dose-edit');renderMeds();renderDashboard();
+}
+
+async function undoDoseFromEdit(){
+  if(!_doseEditLogId||!confirm('Desfazer esta dose?'))return;
+  await deleteHistoryEntry(_doseEditMedId,_doseEditLogId);
+  closeModal('modal-dose-edit');
 }
 
 async function undoDose(medId,logId){
@@ -2334,6 +2399,8 @@ function renderVision(){
   const latest=[...state.vision].sort((a,b)=>b.date.localeCompare(a.date))[0];
   const odG=document.getElementById('v-od-grade'),oeG=document.getElementById('v-oe-grade');
   const odN=document.getElementById('v-od-note'),oeN=document.getElementById('v-oe-note');
+  const eyesCard=document.getElementById('vision-eyes-card');
+  if(eyesCard)eyesCard.style.display=latest?'':'none';
   if(odG)odG.textContent=latest&&latest.right_eye?latest.right_eye:'—';
   if(oeG)oeG.textContent=latest&&latest.left_eye?latest.left_eye:'—';
   if(odN)odN.textContent=latest&&latest.right_notes?latest.right_notes:'';
@@ -2676,47 +2743,107 @@ const DECIDUOUS_TEETH=[
 function renderTeethSection(){
   const container=document.getElementById('teeth-chart-container');
   if(!container)return;
-  const W=320,H=260,cx=W/2,cy=H/2;
-  const upperRx=110,upperRy=65,lowerRx=110,lowerRy=65;
-  const toothW=22,toothH=16;
 
-  function toothPos(quadrant,pos){
-    const total=10;
-    const half=total/2;
-    if(quadrant==='upper'){
-      const angle=Math.PI*(pos-(half-0.5))/(half)*0.72;
-      const x=cx-Math.sin(angle)*upperRx;
-      const y=cy-upperRy-Math.cos(angle)*28+Math.sin(angle)*Math.sin(angle)*18;
-      return{x,y};
-    }else{
-      const angle=Math.PI*(pos-(half-0.5))/(half)*0.72;
-      const x=cx-Math.sin(angle)*lowerRx;
-      const y=cy+lowerRy+Math.cos(angle)*28-Math.sin(angle)*Math.sin(angle)*18;
-      return{x,y};
-    }
-  }
+  const W=340,H=250;
+  // Standard dental chart order (patient's right = viewer's left)
+  const upperOrder=['E','D','C','B','A','J','I','H','G','F'];
+  const lowerOrder=['P','Q','R','S','T','K','L','M','N','O'];
+  // Abbreviated tooth type labels
+  const abbr={E:'2M',D:'1M',C:'Ca',B:'Li',A:'Ci',J:'Ci',I:'Li',H:'Ca',G:'1M',F:'2M',
+               P:'2M',Q:'1M',R:'Ca',S:'Li',T:'Ci',K:'Ci',L:'Li',M:'Ca',N:'1M',O:'2M'};
+  // Per-slot tooth width (wider for molars)
+  const tw=[28,24,20,18,17,17,18,20,24,28];
+  const thU=[19,17,15,14,14,14,14,15,17,19]; // upper tooth heights
+  const thL=[19,17,15,14,14,14,14,15,17,19]; // lower tooth heights
 
-  let svgParts=[`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${W}px;display:block;margin:0 auto">`];
-  // Arch lines
-  svgParts.push(`<ellipse cx="${cx}" cy="${cy-upperRy}" rx="${upperRx}" ry="28" fill="none" stroke="var(--gray-300)" stroke-width="1.5" stroke-dasharray="4,3"/>`);
-  svgParts.push(`<ellipse cx="${cx}" cy="${cy+lowerRy}" rx="${lowerRx}" ry="28" fill="none" stroke="var(--gray-300)" stroke-width="1.5" stroke-dasharray="4,3"/>`);
-  // Label
-  svgParts.push(`<text x="${cx}" y="${cy}" text-anchor="middle" font-size="10" fill="var(--gray-400)" dy="4">Superior / Inferior</text>`);
+  // Arch curve: parabola, max at center (slot 4.5)
+  const curve=i=>46*(1-Math.pow((i-4.5)/4.5,2));
+  const slotX=i=>17+i*31; // center x of each slot
 
-  DECIDUOUS_TEETH.forEach(t=>{
-    const rec=state.teeth.find(r=>r.code===t.code);
+  // Upper arch Y = top of tooth (teeth hang down)
+  const upperY=i=>90-curve(i); // molar top at 90, incisor top at 44
+  // Lower arch Y = bottom of tooth (teeth grow up)
+  const lowerY=i=>162+curve(i); // incisor bottom at 208... let me recalculate
+  // incisor bottom: 162+46=208 — too much. Let me use 152+curve
+  // incisor: 152+46=198, molar: 152+0=152
+  // Gap between upper incisor bottom (44+14=58) and lower incisor top (198-14=184): 184-58=126 — too big
+
+  // Better values: upper top 68-curve, lower bottom 180+curve*0.5
+  // upper incisor top: 68-46=22, upper incisor bottom: 22+14=36
+  // lower incisor bottom: 180, lower incisor top: 180-14=166
+  // gap: 166-36=130 — still too big for H=250
+
+  // Let's compact: upper incisor bottom at ~105, lower incisor top at ~130
+  // upper Y (top of tooth): 85-curve(i) → incisor top=85-46=39, molar top=85
+  // upper tooth bottom: upperY+th → incisor bottom=39+14=53, molar bottom=85+19=104
+  // lower Y (bottom of tooth): 160+curve(i) → incisor bottom=160+46=206, molar bottom=160
+  // lower tooth top: lowerY-th → incisor top=206-14=192, molar top=160-19=141
+  // gap between incisor bottom(53) and incisor top(192): 192-53=139 — still huge
+
+  // I need to flip it: arch opens inward
+  // Upper teeth: close to center → incisors. arch Y goes DOWN toward center
+  //   upper molar: y_top=30 (high up), upper incisor: y_top=75 (closer to center)
+  //   archY_upper=30+curve(i) → molar=30, incisor=30+46=76
+  // Lower teeth: arch Y goes UP toward center
+  //   archY_lower=170-curve(i) → molar=170, incisor=170-46=124
+  // lower tooth top = archY_lower-th, bottom = archY_lower
+  //   lower incisor top = 124-14=110, bottom=124
+  //   upper incisor bottom = 76+14=90
+  //   gap = 110-90=20 ✓
+
+  const uY=i=>32+curve(i);  // upper: molar rect top=32, incisor rect top=78
+  const lY=i=>172-curve(i); // lower: molar rect bottom=172, incisor rect bottom=126
+
+  const svgParts=[`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block">`];
+
+  // Labels
+  svgParts.push(`<text x="${W/2}" y="12" text-anchor="middle" font-size="8" font-weight="700" fill="#90A4AE" letter-spacing="1.5">SUPERIOR</text>`);
+  svgParts.push(`<text x="${W/2}" y="${H-4}" text-anchor="middle" font-size="8" font-weight="700" fill="#90A4AE" letter-spacing="1.5">INFERIOR</text>`);
+  svgParts.push(`<text x="${W/2-2}" y="108" text-anchor="end" font-size="7" fill="#B0BEC5">Dir.</text>`);
+  svgParts.push(`<text x="${W/2+2}" y="108" text-anchor="start" font-size="7" fill="#B0BEC5">Esq.</text>`);
+  // Center gap line
+  svgParts.push(`<line x1="${W/2}" y1="90" x2="${W/2}" y2="125" stroke="#CFD8DC" stroke-width="1" stroke-dasharray="3,2"/>`);
+
+  // Upper teeth
+  upperOrder.forEach((code,i)=>{
+    const rec=state.teeth.find(r=>r.code===code);
     const hasFell=rec&&rec.fell_date;
-    const hasAppeared=rec&&rec.appeared_date;
-    const fill=hasFell?'var(--rose-soft)':hasAppeared?'var(--teal)':'var(--gray-100)';
-    const stroke=hasFell?'var(--rose)':hasAppeared?'var(--teal)':'var(--gray-300)';
-    const textColor=hasAppeared&&!hasFell?'#fff':'var(--gray-600)';
-    const {x,y}=toothPos(t.quadrant,t.pos);
-    const hw=toothW/2,hh=toothH/2;
-    svgParts.push(`<g onclick="openToothBySVG('${t.code}')" style="cursor:pointer" transform="translate(${x},${y})">
-      <rect x="${-hw}" y="${-hh}" width="${toothW}" height="${toothH}" rx="4" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>
-      <text x="0" y="1" text-anchor="middle" dominant-baseline="middle" font-size="9" font-weight="600" fill="${textColor}">${t.code}</text>
+    const hasApp=rec&&rec.appeared_date;
+    const fill=hasFell?'#FFCCBC':hasApp?'#80DEEA':'#F5F5F5';
+    const stroke=hasFell?'#FF7043':hasApp?'#0097A7':'#BDBDBD';
+    const tc=hasApp&&!hasFell?'#006064':'#9E9E9E';
+    const x=slotX(i), ytop=uY(i), h=thU[i], w=tw[i];
+    let sub='';
+    if(hasApp){const[,m,d]=rec.appeared_date.split('-');sub=`<text x="${x}" y="${ytop-4}" text-anchor="middle" font-size="6.5" fill="#0097A7">${d}/${m}</text>`;}
+    else sub=`<text x="${x}" y="${ytop-4}" text-anchor="middle" font-size="6.5" fill="#CFD8DC">${abbr[code]}</text>`;
+    svgParts.push(`<g onclick="openToothBySVG('${code}')" style="cursor:pointer">
+      ${sub}
+      <rect x="${x-w/2}" y="${ytop}" width="${w}" height="${h}" rx="3" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>
+      <text x="${x}" y="${ytop+h/2+1}" text-anchor="middle" dominant-baseline="middle" font-size="9" font-weight="700" fill="${tc}">${code}</text>
+      ${hasFell?`<text x="${x}" y="${ytop+h+8}" text-anchor="middle" font-size="6" fill="#FF7043">caiu</text>`:''}
     </g>`);
   });
+
+  // Lower teeth
+  lowerOrder.forEach((code,i)=>{
+    const rec=state.teeth.find(r=>r.code===code);
+    const hasFell=rec&&rec.fell_date;
+    const hasApp=rec&&rec.appeared_date;
+    const fill=hasFell?'#FFCCBC':hasApp?'#80DEEA':'#F5F5F5';
+    const stroke=hasFell?'#FF7043':hasApp?'#0097A7':'#BDBDBD';
+    const tc=hasApp&&!hasFell?'#006064':'#9E9E9E';
+    const x=slotX(i), ybot=lY(i), h=thL[i], w=tw[i];
+    let sub='';
+    if(hasFell){const[,m,d]=rec.fell_date.split('-');sub=`<text x="${x}" y="${ybot+12}" text-anchor="middle" font-size="6.5" fill="#FF7043">${d}/${m}</text>`;}
+    else if(hasApp){const[,m,d]=rec.appeared_date.split('-');sub=`<text x="${x}" y="${ybot+12}" text-anchor="middle" font-size="6.5" fill="#0097A7">${d}/${m}</text>`;}
+    else sub=`<text x="${x}" y="${ybot+12}" text-anchor="middle" font-size="6.5" fill="#CFD8DC">${abbr[code]}</text>`;
+    svgParts.push(`<g onclick="openToothBySVG('${code}')" style="cursor:pointer">
+      <rect x="${x-w/2}" y="${ybot-h}" width="${w}" height="${h}" rx="3" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>
+      <text x="${x}" y="${ybot-h/2+1}" text-anchor="middle" dominant-baseline="middle" font-size="9" font-weight="700" fill="${tc}">${code}</text>
+      ${sub}
+    </g>`);
+  });
+
   svgParts.push('</svg>');
   container.innerHTML=svgParts.join('');
 }
